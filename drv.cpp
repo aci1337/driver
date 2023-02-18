@@ -3,6 +3,9 @@
 
 #define IOCTL_GET_WIN_VER CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_GET_PROCESS_BASE_ADDRESS CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_READ_PHYSICAL_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_WRITE_PHYSICAL_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
 extern "C" NTSTATUS NTAPI IoCreateDriver(PUNICODE_STRING DriverName, PDRIVER_INITIALIZE InitializationFunction);
 extern "C" PVOID NTAPI PsGetProcessSectionBaseAddress(PEPROCESS Process);
 
@@ -16,7 +19,27 @@ typedef struct _PROCESS_BASE_ADDRESS_INFO {
     HANDLE ProcessId;
     PVOID BaseAddress;
 } PROCESS_BASE_ADDRESS_INFO, * PPROCESS_BASE_ADDRESS_INFO;
+typedef struct _PHYSICAL_MEMORY_BUFFER {
+    PHYSICAL_ADDRESS PhysicalAddress;
+    PVOID Buffer;
+    ULONG BufferSize;
+} PHYSICAL_MEMORY_BUFFER, * PPHYSICAL_MEMORY_BUFFER;
 
+NTSTATUS DriverReadPhysicalMemory(PPHYSICAL_MEMORY_BUFFER InputBuffer, PPHYSICAL_MEMORY_BUFFER OutputBuffer)
+{
+    OutputBuffer->Buffer = MmMapIoSpace(InputBuffer->PhysicalAddress, InputBuffer->BufferSize, MmNonCached);
+    RtlCopyMemory(OutputBuffer->Buffer, (PVOID)InputBuffer->PhysicalAddress.QuadPart, InputBuffer->BufferSize);
+    MmUnmapIoSpace(OutputBuffer->Buffer, InputBuffer->BufferSize);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS DriverWritePhysicalMemory(PPHYSICAL_MEMORY_BUFFER InputBuffer)
+{
+    PVOID Buffer = MmMapIoSpace(InputBuffer->PhysicalAddress, InputBuffer->BufferSize, MmNonCached);
+    RtlCopyMemory((PVOID)InputBuffer->PhysicalAddress.QuadPart, InputBuffer->Buffer, InputBuffer->BufferSize);
+    MmUnmapIoSpace(Buffer, InputBuffer->BufferSize);
+    return STATUS_SUCCESS;
+}
 NTSTATUS DriverGetWinVer(PWIN_VER_INFO WinVerInfo)
 {
     RTL_OSVERSIONINFOW osvi = { 0 };
@@ -43,6 +66,7 @@ NTSTATUS DriverDispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     PIO_STACK_LOCATION IoStackLocation = IoGetCurrentIrpStackLocation(Irp);
     ULONG ControlCode = IoStackLocation->Parameters.DeviceIoControl.IoControlCode;
+    PPHYSICAL_MEMORY_BUFFER InputBuffer = (PPHYSICAL_MEMORY_BUFFER)Irp->AssociatedIrp.SystemBuffer;
     NTSTATUS Status = STATUS_SUCCESS;
     switch (ControlCode) {
     case IOCTL_GET_WIN_VER:
@@ -50,6 +74,12 @@ NTSTATUS DriverDispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         break;
     case IOCTL_GET_PROCESS_BASE_ADDRESS:
         Status = DriverGetProcessBaseAddress((PPROCESS_BASE_ADDRESS_INFO)Irp->AssociatedIrp.SystemBuffer);
+        break;
+    case IOCTL_READ_PHYSICAL_MEMORY:
+        Status = DriverReadPhysicalMemory(InputBuffer, InputBuffer);
+        break;
+    case IOCTL_WRITE_PHYSICAL_MEMORY:
+        Status = DriverWritePhysicalMemory(InputBuffer);
         break;
     default:
         Status = STATUS_INVALID_PARAMETER;
